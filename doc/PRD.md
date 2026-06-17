@@ -24,18 +24,22 @@
 
 | 项目 | 方案 |
 |------|------|
-| 语言 | Go |
-| TUI 框架 | [Bubble Tea](https://github.com/charmbracelet/bubbletea) |
-| 组件库 | [Bubbles](https://github.com/charmbracelet/bubbles) (viewport, progressbar, textinput 等) |
-| 布局组件 | [Lip Gloss](https://github.com/charmbracelet/lipgloss) |
+| 语言 | Python 3.12+ |
+| TUI 框架 | [Textual](https://github.com/Textualize/textual) |
+| 异步支持 | Python `asyncio` 标准库 |
+| 子进程管理 | `asyncio.create_subprocess_exec` |
+| 参数解析 | Python 标准库 `shlex.split` |
+| 环境/依赖管理 | [uv](https://github.com/astral-sh/uv) |
 | 数据持久化 | JSON 文件 (`~/.config/m3u8-tui/state.json`) |
-| 配置管理 | 解析项目根目录 `config.json`，支持运行时修改 |
+| 配置管理 | 解析当前目录下的 `config.json`，支持运行时修改 |
 
 **选型理由：**
 
-- `m3u8-downloader` 本身是 Go 编写的，使用 Go 生态可无缝管理子进程
-- Bubble Tea 是 Go 生态最成熟的 TUI 框架，基于 Elm Architecture 模型
-- Lip Gloss 提供声明式样式定义，适合构建复杂的终端布局
+- Textual 是 Python 生态最成熟的 TUI 框架，提供丰富的内置组件（Header, Footer, TabbedContent, DataTable, ProgressBar 等），开发效率远高于 Go 方案
+- Python `asyncio` 提供一流的异步 I/O 支持，天然适合多子进程并发管理和实时输出捕获
+- `asyncio.create_subprocess_exec` 可无缝管理 `m3u8-downloader` 子进程，无需借助外部库
+- Python 标准库 `shlex` 模块提供 shell 引号规则解析，与 Go `shlex` 库功能等价
+- `uv` 提供极速的虚拟环境创建和依赖解析，替代 pip + venv 的传统方案
 
 ---
 
@@ -157,9 +161,9 @@ Input  ──↓──→  Active  ──↓到底──→  History
 
 **参数解析方式：**
 
-使用支持 shell 引号规则的解析器（如 `github.com/google/shlex` 库的 `shlex.Split` 函数）将用户输入的参数字符串正确分割为 `[]string`，传递给 `exec.Command("m3u8-downloader", args...)`。
+使用 Python 标准库的 `shlex.split` 函数将用户输入的参数字符串正确分割为 `list[str]`，传递给 `await asyncio.create_subprocess_exec("m3u8-downloader", *args)`。
 
-> 需要注意：不能使用简单的 `strings.Split(input, " ")` 按空格分割，否则包含空格引号包裹的参数（如 `-o "my video.mp4"`）会被错误拆碎。`shlex.Split` 遵循 POSIX shell 的引号规则，其解析结果与 shell 脚本中 `"$@"` 的行为一致。
+> 需要注意：不能使用简单的 `input.split()` 按空格分割，否则包含空格引号包裹的参数（如 `-o "my video.mp4"`）会被错误拆碎。`shlex.split` 遵循 POSIX shell 的引号规则，其解析结果与 shell 脚本中 `"$@"` 的行为一致。
 
 ---
 
@@ -202,6 +206,10 @@ Input  ──↓──→  Active  ──↓到底──→  History
 
 > **字段说明：** `percent` 为浮点数百分比 (0-100)；`downloaded` 和 `total` 单位为 TS 片段数 (fragments)；`speed` 为字符串（含数值和单位，如 `"12.3 MB/s"`）；`eta` 为字符串格式的剩余时间。
 
+5. **任务取消与强制终止：**
+   - 按 `c` 向子进程发送 SIGTERM 信号，优雅终止任务，状态标记为 `cancelled`
+   - 按 `Ctrl+K` 向子进程发送 SIGKILL 信号，强制终止任务，状态标记为 `cancelled`（用于 SIGTERM 无效时的兜底手段）
+
 ---
 
 ### 4.3 实时输出与进度展示 (FR-03)
@@ -210,7 +218,7 @@ Input  ──↓──→  Active  ──↓到底──→  History
 
 **详细规则：**
 
-1. **输出捕获：** 通过 `exec.Command` 的 `StdoutPipe` 和 `StderrPipe` 实时读取子进程输出，逐行推送到对应任务的 `output_log`
+1. **输出捕获：** 通过 `asyncio.create_subprocess_exec` 的 `stdout=PIPE` 和 `stderr=PIPE` 参数创建子进程，使用异步迭代器实时读取子进程输出，逐行推送到对应任务的 `output_log`
 2. **进度解析：** `m3u8-downloader` 的进度输出有固定格式，通过正则匹配提取：
    - 百分比: `(\d+\.?\d*)%`
    - 下载/总数: `(\d+)/(\d+)`
@@ -227,9 +235,9 @@ Input  ──↓──→  Active  ──↓到底──→  History
 ```
 
 4. **实时刷新机制：**
-   - 子进程每行输出触发 Bubble Tea `tea.Cmd` 消息
+   - 子进程每行输出通过 `asyncio.Queue` 作为消息传递给 Textual App，触发 UI 更新
    - 进度更新频率受控（最小更新间隔 200ms），避免性能问题
-   - 使用 `tea.Tick` 在无输出时保持渲染
+   - 使用 `App.set_interval()` 在无外部事件时保持周期性渲染
 
 5. **日志滚动：** 每个任务卡片内显示最近 N 行（默认 3 行）输出日志，通过方向键可展开查看更多
 
@@ -241,7 +249,7 @@ Input  ──↓──→  Active  ──↓到底──→  History
 
 **判断进程结束的方式：**
 
-1. **主要方式：** 子进程 `Wait()` 调用返回，表示进程退出
+1. **主要方式：** 子进程 `asyncio.create_subprocess_exec` 返回的 `Process.wait()` 协程完成，表示进程退出
 2. **退出码判断：**
    - 退出码 0 → 状态为 `completed`
    - 退出码非 0 → 状态为 `failed`
@@ -261,7 +269,9 @@ Input  ──↓──→  Active  ──↓到底──→  History
 ```
 
 4. 历史任务日志保留完整输出，可通过 `Enter` 查看详情
-5. 用户手动使用 `Ctrl+C` 取消任务 → 状态为 `cancelled`（注意区分：一次 Ctrl+C 取消选中的任务，两次 Ctrl+C 退出程序）
+5. 用户手动使用 `Ctrl+C` 取消任务 → 状态为 `cancelled`（注意区分：有选中任务时按一次 Ctrl+C 取消该任务；无选中任务时按一次 Ctrl+C 直接退出程序）
+6. **重试失败任务（`r` 键）：** 在历史列表中选中状态为 `failed` 或 `cancelled` 的任务，按 `r` 键复制该任务的原始参数字符串并填入 Input 框，用户可修改后按 `Enter` 重新启动
+7. **删除历史记录（`d` 键）：** 在历史列表中选中任务，按 `d` 键从历史列表中永久删除该记录
 
 ---
 
@@ -275,7 +285,7 @@ Input  ──↓──→  Active  ──↓到底──→  History
 2. **持久化时机：**
    - 每 2 秒自动保存一次状态快照
    - 正常退出时（`Ctrl+C` 或 `q` 键）立即保存
-3. **持久化内容：**
+3. **持久化内容（采用日志文件方案，state.json 不存完整输出日志）：**
 
 ```json
 {
@@ -287,7 +297,7 @@ Input  ──↓──→  Active  ──↓到底──→  History
       "status": "running",
       "pid": 12345,
       "start_time": "...",
-      "history": []
+      "log_file": "~/.config/m3u8-tui/logs/{task_id}.log"
     }
   ],
   "history": [
@@ -297,26 +307,21 @@ Input  ──↓──→  Active  ──↓到底──→  History
       "status": "completed",
       "start_time": "...",
       "end_time": "...",
-      "output_log": ["..."]
+      "log_file": "~/.config/m3u8-tui/logs/{task_id}.log"
     }
   ]
 }
 ```
 
-4. **恢复机制：**
+4. **恢复机制（基于方案A）：**
    - 启动时读取 `state.json`
-   - 根据 PID 检查进程是否仍然存活（`syscall.Kill(pid, 0)`）
-   - **存活** → 重新关联 stdout/stderr pipe 继续捕获输出（注：对于已脱离的进程只能通过 `/proc/{pid}/fd` 访问，或者将子进程设计为以 nohup 模式运行并重定向到日志文件，TUI 启动时通过读取日志文件恢复状态）
-   - **不存活** → 标记为 `cancelled` 或通过解析已有输出判断终态
+   - 根据 PID 检查进程是否仍然存活（`os.kill(pid, 0)`）
+   - **存活** → 通过 `log_file` 路径读取已有日志，继续追加捕获新输出（子进程输出同时写入该文件）
+   - **不存活** → 从 `log_file` 读取最终输出，根据退出码标记终态（`completed` / `failed`）
 
-**进程存活恢复的设计选择：**
+**实施方案（方案A）：**
 
-由于重新关联已运行进程的 stdout pipe 存在技术限制，推荐采用以下方案：
-
-- **方案A（推荐）：** 子进程启动时 `m3u8-downloader` 的输出同时重定向到 `~/.config/m3u8-tui/logs/{task_id}.log`，TUI 始终通过读取日志文件来展示输出。PID 仅用于判断进程存活状态和发送信号。
-- **方案B：** 退出时 kill 所有子进程并记录为 interrupted，下次进入时重新启动（简单但体验差）
-
-本 PRD 推荐**方案A**。
+子进程启动时将 `m3u8-downloader` 的 stdout/stderr 同时重定向到 `~/.config/m3u8-tui/logs/{task_id}.log`。TUI 始终通过读取日志文件来展示输出，PID 仅用于判断进程存活状态和发送信号。这样退出重入后无需重新关联 pipe，直接读取已有日志即可恢复。
 
 ---
 
@@ -394,102 +399,127 @@ Input  ──↓──→  Active  ──↓到底──→  History
 
 ## 6. 数据流与架构
 
-### 6.1 Elm 架构（Bubble Tea）
+### 6.1 Textual 响应式架构
+
+Textual 采用**组件树 + 消息队列**的响应式架构，与 Go Bubble Tea 的 Elm Architecture 不同，Textual 的 UI 由组件树（Widget Tree）驱动，各组件自主处理消息并更新自身状态。
 
 ```
-                    ┌──────────┐
-                    │   Model  │  ← 全局状态（任务列表、配置、焦点等）
-                    └────┬─────┘
-                         │
-              ┌──────────┼──────────┐
-              ▼          ▼          ▼
-         ┌────────┐ ┌────────┐ ┌────────┐
-         │  Init  │ │ Update │ │  View  │
-         └───┬────┘ └───┬────┘ └───┬────┘
-             │           │           │
-             │    ┌──────▼──────┐    │
-             │    │   Cmd      │    │
-             │    │ (副作用)    │    │
-             │    └──────┬─────┘    │
-             │           │           │
-             └───────────┴───────────┘
-                         │
-                         ▼
-                   终端渲染输出
+                     ┌──────────────────────┐
+                     │   App (m3u8_tui)     │  ← 顶层 App，持有全局状态
+                     │  - tasks: list[Task] │
+                     │  - config: Config    │
+                     │  - focus: str        │
+                     └──────────┬───────────┘
+                                │ compose()
+              ┌─────────────────┼─────────────────┐
+              ▼                 ▼                  ▼
+   ┌──────────────────┐ ┌───────────────┐ ┌─────────────────┐
+   │  TaskPanel       │ │ ConfigPanel   │ │  HelpScreen     │
+   │  ├ InputWidget   │ │ ├ FormWidget  │ │                 │
+   │  ├ ActiveList    │ │ └ UAList      │ │                 │
+   │  └ HistoryList   │ │              │ │                 │
+   └──────────────────┘ └───────────────┘ └─────────────────┘
+
+        ┌────────────────────────────────────────────┐
+        │          asyncio 事件循环                    │
+        │  ┌──────────┐  ┌──────────────────┐        │
+        │  │ 子进程读取 │  │ set_interval()  │        │
+        │  │ stdout    │  │ (周期保存/刷新)   │        │
+        │  └─────┬────┘  └────────┬─────────┘        │
+        │        │               │                    │
+        │        ▼               ▼                    │
+        │  ┌─────────────────────────────┐            │
+        │  │  asyncio.Queue → post_message│            │
+        │  └─────────────────────────────┘            │
+        └────────────────────────────────────────────┘
+                            │
+                            ▼
+                    终端渲染输出
 ```
+
+**关键设计差异 vs Bubble Tea：**
+
+- Textual 使用 **Widget 组合**代替单一 Model：每个区域是独立 Widget，自行处理渲染和事件
+- Textual 使用 **`post_message()`** 从异步协程向 App 发送消息，代替 Bubble Tea 的 `tea.Cmd` 回调
+- Textual 内置 **CSS 布局**，告别手写终端坐标计算
+- Textual 消息处理分散在各 Widget 的 `on_*` 方法中，而非集中式 `Update()` 函数
 
 ### 6.2 消息类型
 
-```go
-type Msg interface{}
+```python
+from dataclasses import dataclass
+from textual.message import Message
 
-// 子进程输出消息
-type TaskOutputMsg struct {
-    TaskID string
-    Line   string
-}
 
-// 子进程退出消息
-type TaskExitMsg struct {
-    TaskID   string
-    ExitCode int
-    Err      error
-}
+@dataclass
+class TaskOutput(Message):
+    """子进程输出消息"""
+    task_id: str
+    line: str
 
-// 进度更新消息
-type ProgressUpdateMsg struct {
-    TaskID   string
-    Percent  float64
-    Done     int
-    Total    int
-}
 
-// 定时刷新 (UI tick)
-type TickMsg time.Time
+class TaskExit(Message):
+    """子进程退出消息"""
+    def __init__(self, task_id: str, exit_code: int, error: str | None = None) -> None:
+        self.task_id = task_id
+        self.exit_code = exit_code
+        self.error = error
+        super().__init__()
 
-// 自动保存
-type AutoSaveMsg struct{}
 
-// 用户输入
-type KeyMsg tea.KeyMsg
+class ProgressUpdate(Message):
+    """进度更新消息"""
+    def __init__(self, task_id: str, percent: float, done: int, total: int) -> None:
+        self.task_id = task_id
+        self.percent = percent
+        self.done = done
+        self.total = total
+        super().__init__()
+
+
+class AutoSave(Message):
+    """自动保存消息（由 set_interval 触发）"""
+    pass
 ```
+
+> 所有消息通过 App 的 `post_message()` 方法或 Widget 的 `post_message()` 方法发送。子进程输出捕获在独立的 `asyncio.Task` 中运行，通过 `App.post_message()` 将数据推入 Textual 的消息队列。
 
 ### 6.3 目录结构
 
 ```
 ├── doc/
-│   └── PRD.md                    # 本文档
+│   └── PRD.md                           # 本文档
 ├── app/
-│   ├── main.go                   # 入口
-│   ├── go.mod
-│   ├── go.sum
-│   ├── config/
-│   │   └── config.go             # config.json 读取/写入/校验
-│   ├── model/
-│   │   ├── model.go              # 顶层 Model
-│   │   ├── task.go               # 任务 Model
-│   │   ├── config_panel.go       # 配置面板 Model
-│   │   └── input.go              # 输入框 Model
-│   ├── view/
-│   │   ├── layout.go             # 整体布局渲染（标签页式）
-│   │   ├── task_panel.go         # 任务面板渲染
-│   │   ├── task_card.go          # 单个任务卡片渲染
-│   │   ├── config_panel.go       # 配置面板渲染
-│   │   └── help.go               # 帮助面板渲染
-│   ├── update/
-│   │   ├── global.go             # 全局消息处理
-│   │   ├── task.go               # 任务相关消息处理
-│   │   ├── config.go             # 配置相关消息处理
-│   │   └── input.go              # 输入相关消息处理
+│   ├── __init__.py
+│   ├── main.py                          # 入口（App.run()）
+│   ├── config.py                        # config.json 读取/写入/校验
+│   ├── models/
+│   │   ├── __init__.py
+│   │   ├── task.py                      # Task 数据类 & 状态机
+│   │   └── config.py                    # Config 数据类
+│   ├── widgets/
+│   │   ├── __init__.py
+│   │   ├── task_panel.py                # 任务面板（Input + Active + History）
+│   │   ├── input_widget.py              # 输入框组件
+│   │   ├── active_list.py               # 活动任务列表组件
+│   │   ├── history_list.py              # 历史任务列表组件
+│   │   ├── task_card.py                 # 单个任务卡片渲染
+│   │   ├── config_panel.py              # 配置面板（Form + UA 列表）
+│   │   └── help_screen.py               # 帮助面板
 │   ├── runner/
-│   │   ├── runner.go             # 子进程管理（启动/停止/监控）
-│   │   └── progress.go           # 输出解析（进度正则匹配）
+│   │   ├── __init__.py
+│   │   ├── runner.py                    # 子进程管理（启动/停止/监控）
+│   │   └── progress.py                  # 输出解析（进度正则匹配）
 │   ├── store/
-│   │   ├── store.go              # 状态持久化（读写 state.json）
-│   │   └── log.go                # 日志文件管理
+│   │   ├── __init__.py
+│   │   ├── store.py                     # 状态持久化（读写 state.json）
+│   │   └── log.py                       # 日志文件管理
 │   └── util/
-│       ├── parse.go              # 参数字符串解析
-│       └── pid.go                # 进程存活检测
+│       ├── __init__.py
+│       └── pid.py                       # 进程存活检测
+├── pyproject.toml                       # uv 项目配置 & 依赖声明
+├── uv.lock                              # uv 依赖锁定文件
+└── README.md
 ```
 
 ---
