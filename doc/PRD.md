@@ -239,7 +239,7 @@ Input  ──↓──→  Active  ──↓到底──→  History
    - 进度更新频率受控（最小更新间隔 200ms），避免性能问题
    - 使用 `App.set_interval()` 在无外部事件时保持周期性渲染
 
-5. **日志滚动：** 每个任务卡片内显示最近 N 行（默认 3 行）输出日志，通过方向键可展开查看更多
+5. **日志滚动：** 每个任务卡片内显示最近 N 行（默认 3 行）输出日志，选中后按 `Enter` 展开/收起查看全部日志
 
 ---
 
@@ -269,7 +269,7 @@ Input  ──↓──→  Active  ──↓到底──→  History
 ```
 
 4. 历史任务日志保留完整输出，可通过 `Enter` 查看详情
-5. 用户手动使用 `Ctrl+C` 取消任务 → 状态为 `cancelled`（注意区分：有选中任务时按一次 Ctrl+C 取消该任务；无选中任务时按一次 Ctrl+C 直接退出程序）
+5. 用户按 `c` 取消选中任务 → 状态为 `cancelled`（发送 SIGTERM 优雅终止）
 6. **重试失败任务（`r` 键）：** 在历史列表中选中状态为 `failed` 或 `cancelled` 的任务，按 `r` 键复制该任务的原始参数字符串并填入 Input 框，用户可修改后按 `Enter` 重新启动
 7. **删除历史记录（`d` 键）：** 在历史列表中选中任务，按 `d` 键从历史列表中永久删除该记录
 
@@ -365,7 +365,7 @@ Input  ──↓──→  Active  ──↓到底──→  History
 | `Tab` | 切换标签页（任务面板 ↔ 配置面板） |
 | `1` | 跳转到任务面板标签页 |
 | `2` | 跳转到配置面板标签页 |
-| `Ctrl+C` | 第1次：取消当前选中任务；无选中任务时退出程序 |
+| `Ctrl+C` | 退出程序 |
 | `q` | 退出程序 |
 | `?` | 显示/隐藏帮助面板 |
 
@@ -388,8 +388,8 @@ Input  ──↓──→  Active  ──↓到底──→  History
 |------|------|
 | `j` / `↓` | 向下选择配置项 |
 | `k` / `↑` | 向上选择配置项 |
-| `e` | 进入编辑模式 |
-| `Enter` | 确认编辑 |
+| `e` | 进入/退出编辑模式 |
+| `Enter` | 开始编辑选中配置项 / 确认修改 |
 | `Esc` | 取消编辑 |
 | `a` | 在 UA 列表添加新项 |
 | `d` | 删除选中的 UA 项 |
@@ -469,10 +469,10 @@ class TaskExit(Message):
 
 class ProgressUpdate(Message):
     """进度更新消息"""
-    def __init__(self, task_id: str, percent: float, done: int, total: int) -> None:
+    def __init__(self, task_id: str, percent: float, downloaded: int, total: int) -> None:
         self.task_id = task_id
         self.percent = percent
-        self.done = done
+        self.downloaded = downloaded
         self.total = total
         super().__init__()
 
